@@ -1,291 +1,163 @@
--- ============================================================
---  MM2 TRADE HELPER – ПРОСТАЯ РАБОЧАЯ ВЕРСИЯ
---  ТОЛЬКО GODLY И ANCIENT
--- ============================================================
+-- Оптимизированный FE Dropkick скрипт для мобильного экспорта Delta
+-- Без визуальных эффектов, минимальная нагрузка
 
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
 
--- ===== ЗАГРУЗКА ЦЕН С САЙТА =====
-local itemPrices = {}
-local isEnabled = false
-local monitorConnection = nil
-local priceLabels = {}
+-- Настройки дропкика
+local DROPKICK_SETTINGS = {
+    Range = 6,              -- Дальность удара
+    Damage = 25,            -- Урон
+    KnockbackForce = 50,    -- Сила отбрасывания
+    Cooldown = 1.5,         -- Задержка между ударами
+    JumpPower = 30,         -- Сила прыжка при дропкике
+    AnimationLength = 0.4,  -- Длина анимации
+    Enabled = true          -- Включен ли скрипт
+}
 
--- Простой парсер для supremevalues.com
-local function loadPrices()
-    print("🔄 Загрузка цен...")
-    local newPrices = {}
-    
-    -- Загружаем Godly
-    local success, response = pcall(function()
-        return HttpService:GetAsync("https://supremevalues.com/mm2/godlies")
-    end)
-    
-    if success and response then
-        -- Ищем все "Название - Value - число"
-        for name, value in string.gmatch(response, "([%w%s%'%-%.]+)%s*Value%s*%-%s*([%d,]+)") do
-            local cleanName = name:gsub("^%s*(.-)%s*$", "%1")
-            local cleanValue = tonumber(value:gsub(",", ""))
-            if cleanName and cleanValue and cleanValue > 0 then
-                newPrices[cleanName] = cleanValue
-            end
-        end
-        print("   ✅ Загружено Godly: " .. #newPrices)
-    end
-    
-    -- Загружаем Ancient
-    success, response = pcall(function()
-        return HttpService:GetAsync("https://supremevalues.com/mm2/ancient")
-    end)
-    
-    if success and response then
-        for name, value in string.gmatch(response, "([%w%s%'%-%.]+)%s*Value%s*%-%s*([%d,]+)") do
-            local cleanName = name:gsub("^%s*(.-)%s*$", "%1")
-            local cleanValue = tonumber(value:gsub(",", ""))
-            if cleanName and cleanValue and cleanValue > 0 then
-                newPrices[cleanName] = cleanValue
-            end
-        end
-        print("   ✅ Загружено Ancient: " .. #newPrices)
-    end
-    
-    -- Обновляем глобальную таблицу
-    for k in pairs(itemPrices) do itemPrices[k] = nil end
-    for k, v in pairs(newPrices) do itemPrices[k] = v end
-    
-    print("✅ Всего загружено: " .. #itemPrices)
-end
+-- Переменные состояния
+local cooldown = false
+local isDropping = false
+local debounce = false
 
--- ===== ПОИСК ГЛАВНОГО ОКНА ТРЕЙДА =====
-local function findTradeWindow()
-    -- Ищем в PlayerGui
-    for _, child in ipairs(playerGui:GetChildren()) do
-        if child.Name:lower():find("trade") or child.Name:lower():find("offer") then
-            return child
-        end
-    end
-    
-    -- Ищем в CoreGui
-    local coreGui = game:GetService("CoreGui")
-    for _, child in ipairs(coreGui:GetChildren()) do
-        if child.Name:lower():find("trade") or child.Name:lower():find("offer") then
-            return child
-        end
-    end
-    
-    return nil
-end
+-- Создаем удаленный событие (для FE)
+local remoteEvent = Instance.new("RemoteEvent")
+remoteEvent.Name = "DropkickEvent"
+remoteEvent.Parent = ReplicatedStorage
 
--- ===== ПОИСК ВСЕХ СЛОТОВ С ПРЕДМЕТАМИ =====
-local function findAllSlots(parent)
-    local slots = {}
+-- Функция для получения ближайшего игрока
+local function getNearestPlayer()
+    local nearest = nil
+    local minDist = DROPKICK_SETTINGS.Range + 1
     
-    local function search(obj)
-        for _, child in ipairs(obj:GetChildren()) do
-            -- Проверяем, похож ли элемент на слот с предметом
-            if child:IsA("ImageButton") or child:IsA("Frame") then
-                -- Проверяем наличие текста с названием
-                local hasText = false
-                local itemName = ""
-                
-                for _, grandChild in ipairs(child:GetChildren()) do
-                    if grandChild:IsA("TextLabel") or grandChild:IsA("TextButton") then
-                        local text = grandChild.Text
-                        if text and text ~= "" and not tonumber(text) and #text > 1 then
-                            -- Проверяем, что это не служебный текст
-                            if not text:lower():find("value") and 
-                               not text:lower():find("price") and
-                               not text:lower():find("total") and
-                               not text:lower():find("win") and
-                               not text:lower():find("lose") then
-                                hasText = true
-                                itemName = text
-                                break
-                            end
-                        end
+    for _, target in pairs(Players:GetPlayers()) do
+        if target ~= player then
+            local targetChar = target.Character
+            if targetChar and targetChar:FindFirstChild("HumanoidRootPart") and targetChar:FindFirstChild("Humanoid") then
+                local targetHumanoid = targetChar.Humanoid
+                if targetHumanoid.Health > 0 then
+                    local dist = (rootPart.Position - targetChar.HumanoidRootPart.Position).Magnitude
+                    if dist < minDist then
+                        nearest = target
+                        minDist = dist
                     end
                 end
-                
-                if hasText and itemName ~= "" then
-                    table.insert(slots, {slot = child, name = itemName})
-                end
-            end
-            search(child)
-        end
-    end
-    
-    search(parent)
-    return slots
-end
-
--- ===== ПОКАЗ ЦЕН НА СЛОТАХ =====
-local function showPrices(tradeWindow)
-    if not tradeWindow then return end
-    
-    -- Удаляем старые метки
-    for _, label in ipairs(priceLabels) do
-        pcall(function() label:Destroy() end)
-    end
-    priceLabels = {}
-    
-    -- Находим все слоты
-    local slots = findAllSlots(tradeWindow)
-    
-    for _, slotData in ipairs(slots) do
-        local slot = slotData.slot
-        local itemName = slotData.name
-        
-        -- Проверяем цену
-        local price = itemPrices[itemName] or 0
-        
-        if price > 0 then
-            -- Создаем метку с ценой
-            local label = Instance.new("TextLabel")
-            label.Size = UDim2.new(0, 60, 0, 18)
-            label.Position = UDim2.new(0, -5, -0.3, 0)
-            label.BackgroundTransparency = 1
-            label.Text = tostring(price)
-            label.TextColor3 = Color3.new(0, 1, 0)
-            label.Font = Enum.Font.SourceSansBold
-            label.TextSize = 14
-            label.TextStrokeTransparency = 0.3
-            label.TextStrokeColor3 = Color3.new(0, 0, 0)
-            label.Parent = slot
-            table.insert(priceLabels, label)
-        end
-    end
-end
-
--- ===== МОНИТОРИНГ ТРЕЙДА =====
-local function startMonitoring()
-    if monitorConnection then return end
-    
-    monitorConnection = RunService.Heartbeat:Connect(function()
-        if not isEnabled then return end
-        
-        local tradeWindow = findTradeWindow()
-        if tradeWindow then
-            showPrices(tradeWindow)
-        end
-    end)
-end
-
-local function stopMonitoring()
-    if monitorConnection then
-        monitorConnection:Disconnect()
-        monitorConnection = nil
-    end
-    
-    for _, label in ipairs(priceLabels) do
-        pcall(function() label:Destroy() end)
-    end
-    priceLabels = {}
-end
-
--- ===== ВКЛЮЧЕНИЕ/ВЫКЛЮЧЕНИЕ =====
-local function toggleHelper()
-    isEnabled = not isEnabled
-    
-    if isEnabled then
-        startMonitoring()
-        print("✅ Помощник включен")
-    else
-        stopMonitoring()
-        print("❌ Помощник выключен")
-    end
-end
-
--- ===== ГЛАВНОЕ ОКНО =====
-local function createGUI()
-    -- Загружаем цены
-    loadPrices()
-    
-    -- Создаем главное окно
-    local mainGui = Instance.new("ScreenGui")
-    mainGui.Name = "TradeHelper"
-    mainGui.Parent = playerGui
-    
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Size = UDim2.new(0, 200, 0, 100)
-    mainFrame.Position = UDim2.new(0, 10, 0, 10)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Parent = mainGui
-    
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 25)
-    title.Text = "⚡ Trade Helper"
-    title.TextColor3 = Color3.new(1, 1, 1)
-    title.BackgroundTransparency = 1
-    title.Font = Enum.Font.SourceSansBold
-    title.TextSize = 16
-    title.Parent = mainFrame
-    
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, 0, 0, 20)
-    statusLabel.Position = UDim2.new(0, 0, 0.3, 0)
-    statusLabel.Text = "Статус: ВЫКЛ"
-    statusLabel.TextColor3 = Color3.new(1, 0, 0)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Font = Enum.Font.SourceSans
-    statusLabel.TextSize = 12
-    statusLabel.Parent = mainFrame
-    
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(0.8, 0, 0, 30)
-    toggleBtn.Position = UDim2.new(0.1, 0, 0.55, 0)
-    toggleBtn.Text = "Включить"
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
-    toggleBtn.TextColor3 = Color3.new(1, 1, 1)
-    toggleBtn.Font = Enum.Font.SourceSansBold
-    toggleBtn.TextSize = 14
-    toggleBtn.Parent = mainFrame
-    
-    toggleBtn.MouseButton1Click:Connect(function()
-        toggleHelper()
-        
-        if isEnabled then
-            statusLabel.Text = "Статус: ВКЛ"
-            statusLabel.TextColor3 = Color3.new(0, 1, 0)
-            toggleBtn.Text = "Выключить"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
-        else
-            statusLabel.Text = "Статус: ВЫКЛ"
-            statusLabel.TextColor3 = Color3.new(1, 0, 0)
-            toggleBtn.Text = "Включить"
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
-        end
-    end)
-    
-    local refreshBtn = Instance.new("TextButton")
-    refreshBtn.Size = UDim2.new(0.4, 0, 0, 18)
-    refreshBtn.Position = UDim2.new(0.3, 0, 0.82, 0)
-    refreshBtn.Text = "Обновить"
-    refreshBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 200)
-    refreshBtn.TextColor3 = Color3.new(1, 1, 1)
-    refreshBtn.Font = Enum.Font.SourceSans
-    refreshBtn.TextSize = 11
-    refreshBtn.Parent = mainFrame
-    
-    refreshBtn.MouseButton1Click:Connect(function()
-        loadPrices()
-        if isEnabled then
-            local tradeWindow = findTradeWindow()
-            if tradeWindow then
-                showPrices(tradeWindow)
             end
         end
-    end)
+    end
     
-    print("✅ Интерфейс создан")
+    return nearest
 end
 
--- ===== ЗАПУСК =====
-pcall(function()
-    createGUI()
-    print("✅ Скрипт запущен")
+-- Выполнение дропкика
+local function performDropkick()
+    if not DROPKICK_SETTINGS.Enabled then return end
+    if cooldown or isDropping or debounce then return end
+    if not rootPart or not humanoid then return end
+    
+    local target = getNearestPlayer()
+    if not target then return end
+    
+    local targetChar = target.Character
+    if not targetChar then return end
+    
+    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+    local targetHumanoid = targetChar:FindFirstChild("Humanoid")
+    if not targetRoot or not targetHumanoid or targetHumanoid.Health <= 0 then return end
+    
+    -- Блокировка
+    cooldown = true
+    isDropping = true
+    debounce = true
+    
+    -- Направление к цели
+    local direction = (targetRoot.Position - rootPart.Position).Unit
+    local distance = (targetRoot.Position - rootPart.Position).Magnitude
+    
+    -- Прыжок к цели
+    humanoid.JumpPower = DROPKICK_SETTINGS.JumpPower
+    humanoid:Jump()
+    
+    -- Применяем скорость к игроку
+    local bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.MaxForce = Vector3.new(4000, 0, 4000)
+    bodyVelocity.Velocity = direction * (DROPKICK_SETTINGS.KnockbackForce + 20)
+    bodyVelocity.Parent = rootPart
+    
+    -- Таймер анимации
+    task.wait(DROPKICK_SETTINGS.AnimationLength)
+    
+    -- Нанесение урона и отбрасывание цели
+    if targetHumanoid.Health > 0 then
+        -- Урон
+        targetHumanoid.Health = math.max(0, targetHumanoid.Health - DROPKICK_SETTINGS.Damage)
+        
+        -- Отбрасывание
+        local targetVelocity = Instance.new("BodyVelocity")
+        targetVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
+        targetVelocity.Velocity = direction * DROPKICK_SETTINGS.KnockbackForce + Vector3.new(0, 10, 0)
+        targetVelocity.Parent = targetRoot
+        
+        -- Чистим через 0.5 сек
+        task.delay(0.5, function()
+            if targetVelocity then targetVelocity:Destroy() end
+        end)
+        
+        -- Отправка события (для синхронизации)
+        remoteEvent:FireServer(target)
+    end
+    
+    -- Чистим телоскорость
+    task.delay(0.3, function()
+        if bodyVelocity then bodyVelocity:Destroy() end
+    end)
+    
+    -- Разблокировка
+    task.wait(DROPKICK_SETTINGS.Cooldown - DROPKICK_SETTINGS.AnimationLength)
+    cooldown = false
+    isDropping = false
+    debounce = false
+end
+
+-- Обработка ввода (тап)
+UserInputService.TouchTapInWorld:Connect(function()
+    performDropkick()
 end)
+
+-- Для ПК тестирования (можно удалить для мобильной версии)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.T then
+        performDropkick()
+    end
+end)
+
+-- Переподключение при респе
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    rootPart = character:WaitForChild("HumanoidRootPart")
+    humanoid = character:WaitForChild("Humanoid")
+    cooldown = false
+    isDropping = false
+    debounce = false
+end)
+
+-- Очистка памяти
+RunService.Heartbeat:Connect(function()
+    if rootPart and rootPart:FindFirstChildOfClass("BodyVelocity") then
+        local bv = rootPart:FindFirstChildOfClass("BodyVelocity")
+        if bv and bv.Velocity.Magnitude < 1 then
+            bv:Destroy()
+        end
+    end
+end)
+
+print("FE Dropkick скрипт загружен (Без визуала, оптимизирован для Delta)")
