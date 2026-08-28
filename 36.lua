@@ -1,6 +1,6 @@
 -- ============================================================
 --  MM2 TRADE HELPER – ТОЛЬКО GODLY И ANCIENT
---  БЕЗ ЛОКАЛЬНОЙ БАЗЫ, ТОЛЬКО С САЙТА
+--  БЕЗ ЛОКАЛЬНОЙ БАЗЫ, С ПРАВИЛЬНЫМ ПАРСЕРОМ
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -26,23 +26,64 @@ local priceUpdateTimer = nil
 local lastUpdateTime = os.time()
 local totalItemsLoaded = 0
 
--- ===== ЗАГРУЗКА ОДНОЙ СТРАНИЦЫ =====
+-- ===== ПРАВИЛЬНЫЙ ПАРСЕР ДЛЯ SUPREMEVALUES =====
 local function fetchCategory(url)
     local success, response = pcall(function()
         return HttpService:GetAsync(url)
     end)
     if not success or not response then
+        warn("❌ Не удалось загрузить: " .. url)
         return nil
     end
 
     local prices = {}
-    for name, value in string.gmatch(response, "([%w%s%'%-]+)%s*Value%s*%-%s*([%d,]+)") do
-        local cleanName = name:gsub("^%s*(.-)%s*$", "%1")
-        local cleanValue = tonumber(value:gsub(",", ""))
-        if cleanName and cleanValue then
-            prices[cleanName] = cleanValue
+    local currentItem = nil
+    local currentValue = nil
+    
+    -- Разбиваем по строкам
+    for line in response:gmatch("[^\r\n]+") do
+        -- Ищем название предмета (не содержит "Value -" и не служебное)
+        local possibleName = line:match("^%s*([%w%s%'%-%.]+)%s*$")
+        if possibleName and not possibleName:match("Value") 
+           and not possibleName:match("Range") 
+           and not possibleName:match("Stability")
+           and not possibleName:match("Demand")
+           and not possibleName:match("Change")
+           and not possibleName:match("Tier")
+           and not possibleName:match("Filter")
+           and not possibleName:match("Sort")
+           and not possibleName:match("Controls")
+           and not possibleName:match("Extra")
+           and not possibleName:match("TIP")
+           and not possibleName:match("Supreme")
+           and not possibleName:match("Join")
+           and not possibleName:match("Trade")
+           and not possibleName:match("Value Key")
+           and not possibleName:match("Theme")
+           and not possibleName:match("Mode")
+           and not possibleName:match("Style")
+           and not possibleName:match("Color")
+           and not possibleName:match("Layout")
+           and not possibleName:match("Inventory")
+           and not possibleName:match("Your Inventory")
+           and not possibleName:match("Percentile")
+           and not possibleName:match("Changelog")
+           and #possibleName > 1 then
+            currentItem = possibleName:gsub("^%s*(.-)%s*$", "%1")
+        end
+        
+        -- Ищем строку с ценой
+        local value = line:match("Value%s*%-%s*([%d,]+)")
+        if value and currentItem then
+            local cleanValue = tonumber(value:gsub(",", ""))
+            if cleanValue and cleanValue > 0 then
+                prices[currentItem] = cleanValue
+                print("   ✔️ " .. currentItem .. " = " .. cleanValue)
+                currentItem = nil -- Сбрасываем, чтобы не дублировать
+            end
         end
     end
+    
     return prices
 end
 
