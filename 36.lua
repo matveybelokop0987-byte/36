@@ -86,7 +86,7 @@ end
 
 -- ===== ЗАГРУЗКА ТОЛЬКО РАЗРЕШЕННЫХ КАТЕГОРИЙ =====
 local function fetchAllPrices()
-    print("🔄 Обновление цен с сайта (только разрешенные категории)...")
+    print("🔄 Обновление цен с сайта...")
     local allPrices = {}
     local loaded = 0
 
@@ -114,8 +114,7 @@ local function fetchAllPrices()
         end
         totalItemsLoaded = loaded
         lastUpdateTime = os.time()
-        print("✅ Цены обновлены! Загружено предметов: " .. loaded)
-        print("📋 Категории: " .. table.concat(ALLOWED_CATEGORIES, ", "))
+        print("✅ Цены обновлены! Всего предметов: " .. loaded)
         return true
     else
         warn("❌ Не удалось загрузить ни одной категории. Использую локальную базу.")
@@ -183,8 +182,8 @@ local function updateTradeUI(tradeGui)
     -- Метки цен (только для предметов из разрешенных категорий)
     for _, slot in ipairs(slots) do
         local itemName = getItemNameFromSlot(slot)
-        local price = itemPrices[itemName] or 0
-        if price > 0 then
+        local price = itemPrices[itemName]
+        if price and price > 0 then
             local label = Instance.new("TextLabel")
             label.Size = UDim2.new(0, 70, 0, 20)
             label.Position = UDim2.new(0, -5, -0.4, 0)
@@ -216,8 +215,8 @@ local function updateTradeUI(tradeGui)
         for _, slot in ipairs(container:GetChildren()) do
             if slot:IsA("Frame") or slot:IsA("ImageButton") then
                 local name = getItemNameFromSlot(slot)
-                local price = itemPrices[name] or 0
-                if price > 0 then -- Учитываем только предметы с ценой
+                local price = itemPrices[name]
+                if price and price > 0 then
                     total = total + price
                 end
             end
@@ -360,7 +359,6 @@ local function startPriceUpdater()
             if tradeGui then
                 updateTradeUI(tradeGui)
             end
-            -- Обновляем статус в главном окне
             updateMainStatus()
         end
     end)
@@ -434,9 +432,30 @@ local function createMainGUI()
     statusText.TextSize = 13
     statusText.Parent = mainFrame
 
+    -- Информация о категориях
+    local infoText = Instance.new("TextLabel")
+    infoText.Size = UDim2.new(1, 0, 0, 16)
+    infoText.Position = UDim2.new(0, 0, 0.4, 0)
+    infoText.Text = "Commons, Uncommons, Rares, Legendaries"
+    infoText.TextColor3 = Color3.new(0.7, 0.7, 0.7)
+    infoText.BackgroundTransparency = 1
+    infoText.Font = Enum.Font.SourceSans
+    infoText.TextSize = 10
+    infoText.Parent = mainFrame
+    
+    local infoText2 = Instance.new("TextLabel")
+    infoText2.Size = UDim2.new(1, 0, 0, 16)
+    infoText2.Position = UDim2.new(0, 0, 0.47, 0)
+    infoText2.Text = "Godlies, Chromas, Vintages, Ancients"
+    infoText2.TextColor3 = Color3.new(0.7, 0.7, 0.7)
+    infoText2.BackgroundTransparency = 1
+    infoText2.Font = Enum.Font.SourceSans
+    infoText2.TextSize = 10
+    infoText2.Parent = mainFrame
+
     local toggleButton = Instance.new("TextButton")
     toggleButton.Size = UDim2.new(0.8, 0, 0, 30)
-    toggleButton.Position = UDim2.new(0.1, 0, 0.5, 0)
+    toggleButton.Position = UDim2.new(0.1, 0, 0.6, 0)
     toggleButton.Text = "Включить"
     toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
     toggleButton.TextColor3 = Color3.new(1, 1, 1)
@@ -462,7 +481,7 @@ local function createMainGUI()
 
     local refreshBtn = Instance.new("TextButton")
     refreshBtn.Size = UDim2.new(0.4, 0, 0, 20)
-    refreshBtn.Position = UDim2.new(0.3, 0, 0.85, 0)
+    refreshBtn.Position = UDim2.new(0.3, 0, 0.88, 0)
     refreshBtn.Text = "Обновить цены"
     refreshBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 200)
     refreshBtn.TextColor3 = Color3.new(1, 1, 1)
@@ -478,7 +497,7 @@ local function createMainGUI()
     end)
 
     print("✅ Главное окно создано")
-    print("📋 Доступны категории: " .. table.concat(ALLOWED_CATEGORIES, ", "))
+    print("📋 Показываются только категории: " .. table.concat(ALLOWED_CATEGORIES, ", "))
 end
 
 -- ===== ЗАПУСК =====
@@ -507,5 +526,5 @@ if not success then
     task.wait(5)
     errorGui:Destroy()
 else
-    print("✅ Скрипт загружен – активны только указанные категории!")
+    print("✅ Скрипт загружен – показываются только указанные категории!")
 end
