@@ -1,6 +1,6 @@
 -- ============================================================
 --  MM2 TRADE HELPER – ТОЛЬКО GODLY И ANCIENT
---  БЕЗ ЛОКАЛЬНОЙ БАЗЫ, С ПРАВИЛЬНЫМ ПАРСЕРОМ
+--  С УЛУЧШЕННЫМ ПОИСКОМ СЛОТОВ
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -16,7 +16,7 @@ local CATEGORY_URLS = {
 }
 
 -- ===== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====
-local itemPrices = {} -- Пустая база, только с сайта
+local itemPrices = {}
 local isEnabled = false
 local monitorConnection = nil
 local createdLabels = {}
@@ -25,6 +25,7 @@ local winLossFrame = nil
 local priceUpdateTimer = nil
 local lastUpdateTime = os.time()
 local totalItemsLoaded = 0
+local tradeGui = nil
 
 -- ===== ПРАВИЛЬНЫЙ ПАРСЕР ДЛЯ SUPREMEVALUES =====
 local function fetchCategory(url)
@@ -40,9 +41,7 @@ local function fetchCategory(url)
     local currentItem = nil
     local currentValue = nil
     
-    -- Разбиваем по строкам
     for line in response:gmatch("[^\r\n]+") do
-        -- Ищем название предмета (не содержит "Value -" и не служебное)
         local possibleName = line:match("^%s*([%w%s%'%-%.]+)%s*$")
         if possibleName and not possibleName:match("Value") 
            and not possibleName:match("Range") 
@@ -72,14 +71,13 @@ local function fetchCategory(url)
             currentItem = possibleName:gsub("^%s*(.-)%s*$", "%1")
         end
         
-        -- Ищем строку с ценой
         local value = line:match("Value%s*%-%s*([%d,]+)")
         if value and currentItem then
             local cleanValue = tonumber(value:gsub(",", ""))
             if cleanValue and cleanValue > 0 then
                 prices[currentItem] = cleanValue
                 print("   ✔️ " .. currentItem .. " = " .. cleanValue)
-                currentItem = nil -- Сбрасываем, чтобы не дублировать
+                currentItem = nil
             end
         end
     end
@@ -110,7 +108,6 @@ local function fetchAllPrices()
     end
 
     if next(allPrices) then
-        -- Очищаем и загружаем новые цены
         for k in pairs(itemPrices) do itemPrices[k] = nil end
         for k, v in pairs(allPrices) do
             itemPrices[k] = v
@@ -126,41 +123,172 @@ local function fetchAllPrices()
     end
 end
 
--- ===== ПОИСК GUI ТРЕЙДА =====
+-- ===== ПОИСК GUI ТРЕЙДА (УЛУЧШЕННЫЙ) =====
 local function findTradeGui()
-    local possibleNames = {"Trade", "TradeUI", "Trading", "TradeWindow"}
-    local function searchIn(parent)
-        for _, child in ipairs(parent:GetChildren()) do
-            for _, name in ipairs(possibleNames) do
-                if child.Name == name then return child end
+    -- Проверяем все возможные места
+    local guis = {
+        playerGui,
+        game:GetService("CoreGui"),
+        game:GetService("StarterGui")
+    }
+    
+    for _, gui in ipairs(guis) do
+        local function searchRecursive(parent)
+            if not parent then return nil end
+            for _, child in ipairs(parent:GetChildren()) do
+                -- Проверяем по имени
+                if child.Name and (
+                    string.lower(child.Name):find("trade") or 
+                    string.lower(child.Name):find("trading") or
+                    string.lower(child.Name):find("offer") or
+                    string.lower(child.Name):find("exchange")
+                ) then
+                    print("✅ Найден GUI трейда: " .. child.Name)
+                    return child
+                end
+                -- Проверяем дочерние элементы
+                local found = searchRecursive(child)
+                if found then return found end
             end
-            local found = searchIn(child)
+            return nil
+        end
+        local found = searchRecursive(gui)
+        if found then return found end
+    end
+    
+    -- Если не нашли, ищем по всем GUI
+    for _, gui in ipairs(game:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            for _, child in ipairs(gui:GetChildren()) do
+                if child.Name and (
+                    string.lower(child.Name):find("trade") or 
+                    string.lower(child.Name):find("trading") or
+                    string.lower(child.Name):find("offer") or
+                    string.lower(child.Name):find("exchange")
+                ) then
+                    print("✅ Найден GUI трейда (альтернативный): " .. child.Name)
+                    return child
+                end
+            end
+        end
+    end
+    
+    return nil
+end
+
+-- ===== ПОЛУЧЕНИЕ ИМЕНИ ИЗ СЛОТА (УЛУЧШЕННОЕ) =====
+local function getItemNameFromSlot(slot)
+    -- Проверяем все текстовые элементы
+    local function findText(obj)
+        for _, child in ipairs(obj:GetChildren()) do
+            if child:IsA("TextLabel") or child:IsA("TextButton") or child:IsA("TextBox") then
+                local text = child.Text
+                if text and text ~= "" and not tonumber(text) and string.len(text) > 1 then
+                    -- Проверяем, что это не служебный текст
+                    if not string.lower(text):find("value") and 
+                       not string.lower(text):find("price") and
+                       not string.lower(text):find("total") and
+                       not string.lower(text):find("sum") then
+                        return text
+                    end
+                end
+            end
+            local found = findText(child)
             if found then return found end
         end
         return nil
     end
-    local found = searchIn(playerGui)
-    if found then return found end
-    local coreGui = game:GetService("CoreGui")
-    return searchIn(coreGui)
+    
+    local name = findText(slot)
+    if name then return name end
+    
+    -- Если не нашли, проверяем ImageButton с именем
+    if slot:IsA("ImageButton") and slot.Name and slot.Name ~= "" then
+        return slot.Name
+    end
+    
+    return slot.Name
 end
 
--- ===== ПОЛУЧЕНИЕ ИМЕНИ =====
-local function getItemNameFromSlot(slot)
-    for _, child in ipairs(slot:GetChildren()) do
-        if child:IsA("TextLabel") or child:IsA("TextButton") then
-            local text = child.Text
-            if text and text ~= "" and not tonumber(text) then
-                return text
+-- ===== ПОИСК СЛОТОВ ПРЕДМЕТОВ (УЛУЧШЕННЫЙ) =====
+local function findItemSlots(parent)
+    local slots = {}
+    
+    local function searchRecursive(obj)
+        if not obj then return end
+        
+        -- Проверяем, является ли объект слотом
+        local isSlot = false
+        
+        -- Проверяем по имени
+        if obj.Name and (
+            string.lower(obj.Name):find("slot") or
+            string.lower(obj.Name):find("item") or
+            string.lower(obj.Name):find("weapon") or
+            string.lower(obj.Name):find("knife") or
+            string.lower(obj.Name):find("gun") or
+            string.lower(obj.Name):find("pet")
+        ) then
+            isSlot = true
+        end
+        
+        -- Проверяем наличие ImageLabel или ImageButton с картинкой предмета
+        if obj:IsA("Frame") or obj:IsA("ImageButton") then
+            for _, child in ipairs(obj:GetChildren()) do
+                if (child:IsA("ImageLabel") or child:IsA("ImageButton")) and child.Image and child.Image ~= "" then
+                    isSlot = true
+                    break
+                end
             end
         end
+        
+        -- Проверяем наличие текста с названием предмета
+        if obj:IsA("Frame") or obj:IsA("ImageButton") then
+            local hasItemName = false
+            for _, child in ipairs(obj:GetChildren()) do
+                if child:IsA("TextLabel") or child:IsA("TextButton") then
+                    local text = child.Text
+                    if text and text ~= "" and not tonumber(text) and string.len(text) > 1 then
+                        -- Проверяем, не служебный ли это текст
+                        if not string.lower(text):find("value") and 
+                           not string.lower(text):find("price") and
+                           not string.lower(text):find("total") and
+                           not string.lower(text):find("sum") and
+                           not string.lower(text):find("win") and
+                           not string.lower(text):find("lose") then
+                            hasItemName = true
+                            break
+                        end
+                    end
+                end
+            end
+            if hasItemName then
+                isSlot = true
+            end
+        end
+        
+        if isSlot and obj:IsA("Frame") or obj:IsA("ImageButton") then
+            table.insert(slots, obj)
+        end
+        
+        -- Рекурсивно ищем в дочерних элементах
+        for _, child in ipairs(obj:GetChildren()) do
+            searchRecursive(child)
+        end
     end
-    return slot.Name
+    
+    searchRecursive(parent)
+    return slots
 end
 
 -- ===== ОБНОВЛЕНИЕ ИНТЕРФЕЙСА ТРЕЙДА =====
 local function updateTradeUI(tradeGui)
-    if not tradeGui then return end
+    if not tradeGui then 
+        print("⚠️ GUI трейда не найден")
+        return 
+    end
+    
+    print("🔄 Обновление интерфейса трейда...")
 
     -- Очистка
     for _, label in ipairs(createdLabels) do label:Destroy() end
@@ -168,24 +296,32 @@ local function updateTradeUI(tradeGui)
     if totalDisplayFrame then totalDisplayFrame:Destroy() totalDisplayFrame = nil end
     if winLossFrame then winLossFrame:Destroy() winLossFrame = nil end
 
-    -- Сбор слотов
-    local slots = {}
-    local function collectSlots(parent)
-        for _, child in ipairs(parent:GetChildren()) do
-            if child:IsA("Frame") or child:IsA("ImageButton") then
-                if not child:IsA("TextLabel") and child.Name ~= "TotalDisplay" and child.Name ~= "WinLossFrame" then
-                    table.insert(slots, child)
+    -- Находим слоты предметов
+    local slots = findItemSlots(tradeGui)
+    print("   Найдено слотов: " .. #slots)
+    
+    -- Если слотов мало, пробуем найти все Frame и ImageButton
+    if #slots < 5 then
+        local function collectAll(obj)
+            for _, child in ipairs(obj:GetChildren()) do
+                if child:IsA("Frame") or child:IsA("ImageButton") then
+                    if not child:IsA("TextLabel") and child.Name ~= "TotalDisplay" and child.Name ~= "WinLossFrame" then
+                        table.insert(slots, child)
+                    end
                 end
+                collectAll(child)
             end
-            collectSlots(child)
         end
+        collectAll(tradeGui)
+        print("   Альтернативный сбор: " .. #slots .. " элементов")
     end
-    collectSlots(tradeGui)
 
-    -- Метки цен (только для предметов с ценой > 0)
+    -- Метки цен
+    local labeledCount = 0
     for _, slot in ipairs(slots) do
         local itemName = getItemNameFromSlot(slot)
         local price = itemPrices[itemName] or 0
+        
         if price > 0 then
             local label = Instance.new("TextLabel")
             label.Size = UDim2.new(0, 70, 0, 20)
@@ -199,15 +335,28 @@ local function updateTradeUI(tradeGui)
             label.TextStrokeColor3 = Color3.new(0, 0, 0)
             label.Parent = slot
             table.insert(createdLabels, label)
+            labeledCount = labeledCount + 1
+            print("   💰 " .. itemName .. " = " .. price)
         end
     end
+    print("   Отмечено предметов: " .. labeledCount)
 
     -- Поиск контейнеров сторон
     local playerContainer, otherContainer
     for _, child in ipairs(tradeGui:GetChildren()) do
-        if child.Name == "PlayerItems" or child.Name == "Left" or child.Name == "MyItems" then
+        if child.Name and (
+            string.lower(child.Name):find("player") or 
+            string.lower(child.Name):find("left") or 
+            string.lower(child.Name):find("my") or
+            string.lower(child.Name):find("own")
+        ) then
             playerContainer = child
-        elseif child.Name == "OtherItems" or child.Name == "Right" or child.Name == "TargetItems" then
+        elseif child.Name and (
+            string.lower(child.Name):find("other") or 
+            string.lower(child.Name):find("right") or 
+            string.lower(child.Name):find("target") or
+            string.lower(child.Name):find("their")
+        ) then
             otherContainer = child
         end
     end
@@ -215,11 +364,10 @@ local function updateTradeUI(tradeGui)
     local function sumContainer(container)
         local total = 0
         if not container then return total end
-        for _, slot in ipairs(container:GetChildren()) do
-            if slot:IsA("Frame") or slot:IsA("ImageButton") then
-                local name = getItemNameFromSlot(slot)
-                total = total + (itemPrices[name] or 0)
-            end
+        local slotsInContainer = findItemSlots(container)
+        for _, slot in ipairs(slotsInContainer) do
+            local name = getItemNameFromSlot(slot)
+            total = total + (itemPrices[name] or 0)
         end
         return total
     end
@@ -227,6 +375,8 @@ local function updateTradeUI(tradeGui)
     local playerSum = sumContainer(playerContainer)
     local otherSum = sumContainer(otherContainer)
     local diff = playerSum - otherSum
+
+    print("   Ваша сумма: " .. playerSum .. ", Соперник: " .. otherSum)
 
     -- Панель суммы
     totalDisplayFrame = Instance.new("Frame")
@@ -318,9 +468,13 @@ local function startMonitoring()
     if monitorConnection then return end
     monitorConnection = RunService.Heartbeat:Connect(function()
         if not isEnabled then return end
-        local tradeGui = findTradeGui()
-        if tradeGui then
-            updateTradeUI(tradeGui)
+        local currentTradeGui = findTradeGui()
+        if currentTradeGui then
+            -- Обновляем только если GUI изменился или прошло время
+            if tradeGui ~= currentTradeGui then
+                tradeGui = currentTradeGui
+                updateTradeUI(tradeGui)
+            end
         end
     end)
     print("🔍 Мониторинг трейда запущен")
@@ -342,7 +496,6 @@ end
 local function startPriceUpdater()
     if priceUpdateTimer then return end
 
-    -- Первая загрузка
     fetchAllPrices()
 
     priceUpdateTimer = RunService.Heartbeat:Connect(function()
@@ -351,11 +504,9 @@ local function startPriceUpdater()
             priceUpdateTimer._counter = 0
         end
         priceUpdateTimer._counter = priceUpdateTimer._counter + 1
-        -- 5 минут = 18000 тиков (при ~60 Гц)
         if priceUpdateTimer._counter >= 18000 then
             priceUpdateTimer._counter = 0
             fetchAllPrices()
-            local tradeGui = findTradeGui()
             if tradeGui then
                 updateTradeUI(tradeGui)
             end
@@ -365,7 +516,7 @@ local function startPriceUpdater()
     print("⏳ Автообновление цен запущено (каждые 5 минут)")
 end
 
--- ===== ОБНОВЛЕНИЕ СТАТУСА В ГЛАВНОМ ОКНЕ =====
+-- ===== ОБНОВЛЕНИЕ СТАТУСА =====
 local function updateMainStatus()
     local mainGui = playerGui:FindFirstChild("MM2TradeHelper")
     if not mainGui then return end
@@ -382,7 +533,7 @@ local function setEnabled(state)
     isEnabled = state
     if state then
         startMonitoring()
-        local tradeGui = findTradeGui()
+        tradeGui = findTradeGui()
         if tradeGui then updateTradeUI(tradeGui) end
         updateMainStatus()
     else
@@ -471,38 +622,8 @@ local function createMainGUI()
     refreshBtn.MouseButton1Click:Connect(function()
         fetchAllPrices()
         updateMainStatus()
-        local tradeGui = findTradeGui()
         if tradeGui then updateTradeUI(tradeGui) end
     end)
 
-    print("✅ Главное окно создано (только Godly и Ancient)")
-end
-
--- ===== ЗАПУСК =====
-local success, err = pcall(function()
-    startPriceUpdater()
-    createMainGUI()
-end)
-
-if not success then
-    warn("❌ Ошибка: " .. tostring(err))
-    local errorGui = Instance.new("ScreenGui")
-    errorGui.Parent = playerGui
-    local errorFrame = Instance.new("Frame")
-    errorFrame.Size = UDim2.new(0, 300, 0, 100)
-    errorFrame.Position = UDim2.new(0.5, -150, 0.5, -50)
-    errorFrame.BackgroundColor3 = Color3.new(1, 0, 0)
-    errorFrame.Parent = errorGui
-    local errorLabel = Instance.new("TextLabel")
-    errorLabel.Size = UDim2.new(1, 0, 1, 0)
-    errorLabel.Text = "Ошибка! Смотрите консоль (F9)"
-    errorLabel.TextColor3 = Color3.new(1, 1, 1)
-    errorLabel.BackgroundTransparency = 1
-    errorLabel.Font = Enum.Font.SourceSansBold
-    errorLabel.TextSize = 18
-    errorLabel.Parent = errorFrame
-    task.wait(5)
-    errorGui:Destroy()
-else
-    print("✅ Скрипт загружен – только Godly/Ancient, автообновление каждые 5 минут!")
+    print("✅ Главное окно создано")
 end
